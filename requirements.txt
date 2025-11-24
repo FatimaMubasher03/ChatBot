@@ -1,0 +1,8 @@
+langchain
+chromadb
+gradio
+pypdf
+openai
+python-dotenv
+pytesseract
+pdf2image
