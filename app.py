@@ -2,6 +2,11 @@
 import os
 from dotenv import load_dotenv
 
+import pathlib
+import shutil
+from typing import List, Tuple
+from PyPDF2 import PdfReader
+
 # load .env file from project root
 load_dotenv()
 
@@ -23,43 +28,17 @@ Transcript Q&A Chatbot
 - Usage: python app.py
 """
 
-import os
-import pathlib
-import shutil
-from dotenv import load_dotenv
-from typing import List, Tuple
-# OCR imports
-import pytesseract
-from pdf2image import convert_from_path
-from PIL import Image
+# --- LangChain (correct 2024+ imports) ---
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import Chroma
+from langchain_classic.chains import RetrievalQA
+from langchain_core.documents import Document
 
-
-import gradio as gr
-# Tesseract OCR path (update if installed somewhere else)
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-# Optional: Poppler path for pdf2image
-POPPLER_PATH = r"C:\poppler-23.11.0\bin"
-from PyPDF2 import PdfReader
-
-# LangChain imports
-from langchain.document_loaders.pypdf import PyPDFLoader
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import RetrievalQA
-
-# ---------- Gradio ----------
+# UI
 import gradio as gr
 
-# ---------- Load .env ----------
-load_dotenv()  # reads .env into environment variables
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY missing. Add it to your .env file.")
 
 # Optional config - with defaults
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
@@ -90,44 +69,16 @@ def pdf_has_text_layer(pdf_path: str) -> bool:
         return False
 
 
-def ocr_pdf_to_documents(pdf_path: str) -> List[Document]:
-    """
-    Convert scanned PDF → images → OCR → LangChain Documents.
-    Returns list of Documents (one per page).
-    """
-    pages = convert_from_path(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
-
-
-    docs = []
-    for i, page_image in enumerate(pages):
-        text = pytesseract.image_to_string(page_image, lang="eng")
-
-        # wrap OCR text into a LangChain Document
-        docs.append(Document(
-            page_content=text,
-            metadata={"source": pdf_path, "page": i + 1}
-        ))
-
-    return docs
-
-
 # ---------- Utilities / Backend functions ----------
 
 def load_pdf_to_documents(pdf_path: str) -> List[Document]:
     """
-    Load PDF normally if it contains text.
-    If scanned / image-only → run OCR.
+    Load PDF using PyPDFLoader.
+    Assumes PDF contains extractable text (no OCR for scanned images).
     """
-
-    if pdf_has_text_layer(pdf_path):
-        print("🔍 PDF has text — using PyPDFLoader")
-        loader = PyPDFLoader(pdf_path)
-        return loader.load()
-
-    else:
-        print("🖼️ PDF is scanned — running OCR with Tesseract")
-        return ocr_pdf_to_documents(pdf_path)
-
+    print("🔍 Loading PDF with PyPDFLoader (text only)")
+    loader = PyPDFLoader(pdf_path)
+    return loader.load()
 
 
 def split_documents_to_chunks(docs: List[Document], chunk_size: int = EMBED_CHUNK_SIZE, chunk_overlap: int = EMBED_CHUNK_OVERLAP) -> List[Document]:
@@ -189,12 +140,12 @@ def load_chroma_collection(collection_name: str) -> Chroma:
     return vectordb
 
 
-def build_retrieval_qa(vectordb: Chroma, model_name: str = "gpt-3.5-turbo", temperature: float = 0.0) -> RetrievalQA:
+def build_retrieval_qa(vectordb: Chroma, model_name: str = "gpt-4o-mini", temperature: float = 0.0) -> RetrievalQA:
     """
     Build a RetrievalQA chain using ChatOpenAI.
     Returns a chain that, given {"query": question}, returns an answer and source docs.
     """
-    llm = ChatOpenAI(model_name=model_name, temperature=temperature, openai_api_key=OPENAI_API_KEY)
+    llm = ChatOpenAI(model_name=model_name, temperature=0.0, openai_api_key=OPENAI_API_KEY)
     retriever = vectordb.as_retriever(search_kwargs={"k": RETRIEVAL_K})
     qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
     return qa
@@ -255,36 +206,60 @@ def answer_from_collection(collection_name: str, question: str, model_name: str 
 # ---------- Gradio UI ----------
 
 def handle_upload(file, chosen_collection_name: str = None):
-    """
-    Gradio upload handler.
-    - saves uploaded file
-    - indexes it into Chroma (creates collection named after the file by default)
-    """
     if not file:
-        return "No file uploaded.", gr.Dropdown.update(choices=list(UPLOAD_TO_COLLECTION.keys()))
+        return "No file uploaded.", []
 
-    # save file to uploads folder
-    saved_path = os.path.join("uploads", file.name)
-    with open(saved_path, "wb") as f:
-        f.write(file.read())
+    import shutil
+
+    # Gradio >= 3.40 returns a dictionary with 'name' and 'data' or a temporary file path
+    # Get actual file path
+    if hasattr(file, "name") and os.path.exists(file.name):
+        src_path = file.name
+    elif isinstance(file, dict) and "name" in file and "data" in file:
+        # If using NamedString style (older Gradio)
+        src_path = file["name"]
+        with open(src_path, "wb") as f:
+            f.write(file["data"])
+    else:
+        # fallback: write the string content
+        src_path = os.path.join("uploads", getattr(file, "name", "uploaded.pdf"))
+        content = file
+        if hasattr(file, "read"):
+            content = file.read()
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        with open(src_path, "wb") as f:
+            f.write(content)
+
+    # move/copy to uploads folder
+    saved_path = os.path.join("uploads", pathlib.Path(src_path).name)
+    shutil.copy(src_path, saved_path)
 
     try:
         collection_name, chunk_count = index_pdf_file(saved_path, collection_name=chosen_collection_name)
     except Exception as e:
-        return f"Indexing failed: {e}", gr.Dropdown.update(choices=list(UPLOAD_TO_COLLECTION.keys()))
+        return f"Indexing failed: {e}", list(UPLOAD_TO_COLLECTION.keys())
 
-    # update dropdown choices
+    status = f"Indexed {pathlib.Path(saved_path).name} into collection '{collection_name}' ({chunk_count} chunks)."
     choices = list(UPLOAD_TO_COLLECTION.keys())
-    status = f"Indexed {file.name} into collection '{collection_name}' ({chunk_count} chunks)."
-    return status, gr.Dropdown.update(choices=choices, value=file.name)
+    return status, choices
 
 
-def handle_query(selected_file_name: str, question: str, model_name: str):
+
+
+def handle_query(selected_file_name, question: str, model_name: str):
     """
     Gradio ask handler.
-    - loads collection based on selected uploaded filename
-    - returns answer and the source previews
+    - Loads collection based on selected uploaded filename
+    - Returns answer and the source previews
     """
+
+    # Handle case where Gradio passes a list instead of string
+    if isinstance(selected_file_name, list):
+        if len(selected_file_name) == 0:
+            return "Please select an uploaded transcript from the left.", ""
+        selected_file_name = selected_file_name[0]
+
     if not selected_file_name:
         return "Please select an uploaded transcript from the left.", ""
 
@@ -297,15 +272,19 @@ def handle_query(selected_file_name: str, question: str, model_name: str):
     except Exception as e:
         return f"Failed to get answer: {e}", ""
 
-    # format sources for display
+    # Format sources for display
     sources_display = ""
     for i, s in enumerate(sources, 1):
         md = s["metadata"]
         page_info = md.get("page") or md.get("page_number") or md.get("source") or ""
         chunk_index = md.get("chunk", "")
-        sources_display += f"Source {i}: page={page_info} chunk={chunk_index} length={s['length']}\nPreview: {s['preview']}\n---\n"
+        sources_display += (
+            f"Source {i}: page={page_info} chunk={chunk_index} length={s['length']}\n"
+            f"Preview: {s['preview']}\n---\n"
+        )
 
     return answer_text, sources_display
+
 
 
 def build_ui():
@@ -320,10 +299,15 @@ def build_ui():
                 upload_status = gr.Textbox(label="Upload status", interactive=False)
 
                 gr.Markdown("### Indexed transcripts")
-                transcript_dropdown = gr.Dropdown(choices=[], label="Choose indexed transcript (file name)")
+                transcript_dropdown = gr.Dropdown(choices=[], label="Choose indexed transcript (file name)", allow_custom_value=True)
 
                 gr.Markdown("⚙️ Model settings")
-                model_dropdown = gr.Dropdown(choices=["gpt-3.5-turbo", "gpt-4o-mini", "gpt-4"], value="gpt-3.5-turbo", label="OpenAI model")
+                # model_dropdown = gr.Dropdown(choices=["gpt-3.5-turbo", "gpt-4o-mini", "gpt-4"], value="gpt-3.5-turbo", label="OpenAI model")
+                model_choice = gr.Dropdown(
+                    ["gpt-4o-mini", "gpt-4", "gpt-3.5-turbo"],
+                    label="Choose OpenAI Model",
+                    value="gpt-4o-mini"
+                )
                 gr.Markdown("Note: choose a model you have access to in your OpenAI account.")
 
             with gr.Column(scale=2):
@@ -335,7 +319,7 @@ def build_ui():
 
         # Wire events
         upload_btn.click(fn=handle_upload, inputs=[file_in, custom_collection_name], outputs=[upload_status, transcript_dropdown])
-        ask_btn.click(fn=handle_query, inputs=[transcript_dropdown, question, model_dropdown], outputs=[answer_box, sources_box])
+        ask_btn.click(fn=handle_query, inputs=[transcript_dropdown, question, model_choice], outputs=[answer_box, sources_box])
 
         # Footer
         gr.Markdown("**How it works**: upload → index chunks → store embeddings in ChromaDB → ask questions that retrieve relevant chunks → LLM answers using those chunks.")
