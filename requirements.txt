@@ -6,3 +6,15 @@ openai
 python-dotenv
 pytesseract
 pdf2image
+langchain==1.1.0
+langchain-community
+openai
+tiktoken
+chromadb
+pypdf
+pdf2image
+pytesseract
+Pillow
+python-dotenv
+fastapi
+uvicorn
