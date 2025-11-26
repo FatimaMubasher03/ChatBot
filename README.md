@@ -16,19 +16,6 @@ This project is a local, privacy-friendly Q&A Chatbot that lets you upload a PDF
 
 ---
 
-## 📂 Project Structure
-ChatBot/
-│── app.py
-│── requirements.txt
-│── .gitignore
-│── uploads/ # Uploaded PDFs
-│── chroma_db/ # Vector database
-│── venv/ # Virtual environment (ignored)
-│── .env # API keys or secrets (ignored)
-
-
----
-
 ## ⚙️ Installation & Setup
 
 ### 1️⃣ Clone the repository
