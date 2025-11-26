@@ -1,6 +1,6 @@
 # 🎤 Transcript Q&A Chatbot (Python + LangChain + ChromaDB)
 
-This project is a **local, privacy-friendly Q&A Chatbot** that lets you upload a **PDF transcript**, extracts text using **OCR (Tesseract)** or **PyPDF**, splits content into chunks, stores them in **ChromaDB**, and then answers user questions based on the transcript using **LLM embeddings**.
+This project is a local, privacy-friendly Q&A Chatbot that lets you upload a PDF transcript, extracts text using PyPDF, splits the content into chunks, stores them in ChromaDB, and answers user questions based on the transcript — with OCR support planned for the next version.
 
 ## 🚀 Features
 - Upload a PDF transcript
