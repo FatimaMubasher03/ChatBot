@@ -6,3 +6,8 @@ openai
 python-dotenv
 pytesseract
 pdf2image
+pytesseract
+Pillow
+PyPDF2
+langchain-openai
+langchain-community

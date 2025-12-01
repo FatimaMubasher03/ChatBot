@@ -7,6 +7,11 @@ import shutil
 from typing import List, Tuple
 from PyPDF2 import PdfReader
 
+
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image 
+
 # load .env file from project root
 load_dotenv()
 
@@ -36,8 +41,15 @@ from langchain_community.vectorstores import Chroma
 from langchain_classic.chains import RetrievalQA
 from langchain_core.documents import Document
 
-# UI
 import gradio as gr
+
+
+
+# Set tesseract exe path (update to where you installed it)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Poppler bin — full path to Poppler's bin folder (update to your folder)
+POPPLER_PATH = r"D:\poppler-25.11.0\Library\bin"
 
 
 # Optional config - with defaults
@@ -71,14 +83,58 @@ def pdf_has_text_layer(pdf_path: str) -> bool:
 
 # ---------- Utilities / Backend functions ----------
 
+def ocr_pdf_to_documents(pdf_path: str, dpi: int = 300, poppler_path: str = POPPLER_PATH) -> List[Document]:
+    """
+    Convert a scanned/image-only PDF into a list of LangChain Documents (one per page)
+    by converting pages to images with pdf2image and running pytesseract OCR.
+    - pdf_path: path to PDF
+    - dpi: DPI for conversion (higher = better OCR, slower)
+    - poppler_path: path to Poppler 'bin' folder; if None, expects poppler in PATH
+    """
+    # convert_from_path will raise a helpful error if poppler isn't available
+    pages = convert_from_path(pdf_path, dpi=dpi, poppler_path=poppler_path)
+
+    docs: List[Document] = []
+    for i, page_image in enumerate(pages):
+        # page_image is a PIL Image
+        text = pytesseract.image_to_string(page_image, lang="eng")
+        md = {"source": pdf_path, "page": i + 1}
+        docs.append(Document(page_content=text, metadata=md))
+    return docs
+
+
 def load_pdf_to_documents(pdf_path: str) -> List[Document]:
     """
-    Load PDF using PyPDFLoader.
-    Assumes PDF contains extractable text (no OCR for scanned images).
+    Load PDF using text extraction if possible (PyPDF/PyPDFLoader).
+    If the PDF appears to be scanned (no text), run OCR via Tesseract + Poppler.
+    Returns a list of LangChain Document objects.
     """
-    print("🔍 Loading PDF with PyPDFLoader (text only)")
-    loader = PyPDFLoader(pdf_path)
-    return loader.load()
+    # Quick guard: if file doesn't exist raise early
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    # If there is an extractable text layer -> use PyPDFLoader (faster, preserves structure)
+    if pdf_has_text_layer(pdf_path):
+        print("🔍 PDF has a text layer — using PyPDFLoader")
+        loader = PyPDFLoader(pdf_path)
+        docs = loader.load()
+        # ensure metadata pages are present (some loaders set them; otherwise we can add)
+        for idx, d in enumerate(docs):
+            if not d.metadata:
+                d.metadata = {}
+            d.metadata.setdefault("source", pdf_path)
+            d.metadata.setdefault("page", idx + 1)
+        return docs
+
+    # Otherwise fall back to OCR
+    print("🖼️ PDF looks scanned — running OCR with Tesseract + Poppler")
+    try:
+        docs = ocr_pdf_to_documents(pdf_path, dpi=300, poppler_path=POPPLER_PATH)
+        return docs
+    except Exception as e:
+        # propagate a clear error for UI to show
+        raise RuntimeError(f"OCR failed. Is Poppler installed and POPPLER_PATH correct? Error: {e}")
+
 
 
 def split_documents_to_chunks(docs: List[Document], chunk_size: int = EMBED_CHUNK_SIZE, chunk_overlap: int = EMBED_CHUNK_OVERLAP) -> List[Document]:
